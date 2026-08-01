@@ -1,15 +1,40 @@
-# Python
+# # Python
+# backend/.venv/
+# backend/**/__pycache__/
+# backend/*.sqlite3
+# backend/db.sqlite3
+# backend/staticfiles/
+# *.pyc
+
+# # Node
+# frontend/node_modules/
+# frontend/dist/
+
+# # OS / IDE
+# .DS_Store
+# .env
+# .env.*
+
+
+# Python / Django
 backend/.venv/
+backend/venv/
 backend/**/__pycache__/
 backend/*.sqlite3
 backend/db.sqlite3
+backend/staticfiles/
+backend/media/
 *.pyc
 
-# Node
+# Node / React
 frontend/node_modules/
 frontend/dist/
+frontend/.nx/
 
-# OS / IDE
+# OS / IDE / Environment
 .DS_Store
+.vscode/
+.idea/
 .env
 .env.*
+*.log

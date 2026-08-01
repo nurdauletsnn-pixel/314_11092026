@@ -3,11 +3,32 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
-from django.contrib.auth import get_user_model
+from django.conf import settings
+from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
 from django.db import models
 
-User = get_user_model()
+
+class User(AbstractUser):
+    """Кастомная модель пользователя с RBAC-полями (раздел 8 спецификации)."""
+
+    class Role(models.TextChoices):
+        HQ_ADMIN = "HQ_ADMIN", "HQ Admin"
+        BRANCH_DIRECTOR = "BRANCH_DIRECTOR", "Директор филиала"
+        SALES_MANAGER = "SALES_MANAGER", "Менеджер продаж"
+
+    role = models.CharField(max_length=30, choices=Role.choices, default=Role.SALES_MANAGER)
+    branch = models.ForeignKey("Branch", null=True, blank=True, on_delete=models.PROTECT)
+
+    def clean(self):
+        super().clean()
+        if self.role != self.Role.HQ_ADMIN and self.branch is None:
+            raise ValidationError(
+                {"branch": "Филиал обязателен для ролей, отличных от HQ_ADMIN."}
+            )
+
+    def __str__(self) -> str:
+        return self.username
 
 
 class Branch(models.Model):
@@ -171,9 +192,14 @@ class Deal(models.Model):
     discount_percent = models.PositiveIntegerField(default=0)
     total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
-    assigned_to = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
     created_at = models.DateTimeField(auto_now_add=True)
     is_cross_branch = models.BooleanField(default=False)
+    # Гео-роутинг (раздел 8.5): что зафиксировала входящая форма
+    source_city = models.CharField(max_length=50, null=True, blank=True)
+    source_branch_requested = models.CharField(max_length=100, null=True, blank=True)
+    # Анти-дубль (раздел 7, Риск 4): если контакт уже существовал — ссылка на исходный Contact
+    is_duplicate_of = models.ForeignKey("Contact", null=True, blank=True, on_delete=models.SET_NULL, related_name="duplicate_deals")
 
     class Meta:
         ordering = ["-created_at"]
@@ -226,12 +252,26 @@ class PaymentSchedule(models.Model):
 
 
 class Task(models.Model):
+    PRIORITY_LOW = "LOW"
+    PRIORITY_MEDIUM = "MEDIUM"
+    PRIORITY_HIGH = "HIGH"
+    PRIORITY_CHOICES = [
+        (PRIORITY_LOW, "Low"),
+        (PRIORITY_MEDIUM, "Medium"),
+        (PRIORITY_HIGH, "High"),
+    ]
+
     deal = models.ForeignKey(Deal, related_name="tasks", on_delete=models.CASCADE)
     title = models.CharField(max_length=255)
     due_date = models.DateField()
     is_done = models.BooleanField(default=False)
     auto_generated = models.BooleanField(default=False)
-    assigned_to = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default=PRIORITY_MEDIUM)
+
+    @property
+    def is_completed(self) -> bool:
+        return self.is_done
 
 
 class ActivityLog(models.Model):
@@ -272,22 +312,3 @@ class BotMessage(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
 
-class UserProfile(models.Model):
-    ROLE_CHOICES = [
-        ("admin", "Администратор"),
-        ("sales_head", "Руководитель продаж"),
-        ("rm", "Региональный менеджер"),
-        ("manager", "Менеджер филиала"),
-        ("sales", "Менеджер по продажам"),
-        ("sales_assistant", "Ассистент продаж"),
-        ("network_coordinator", "Координатор сети"),
-        ("hr", "HR"),
-        ("site", "Системный"),
-    ]
-
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
-    role = models.CharField(max_length=30, choices=ROLE_CHOICES)
-    branches = models.ManyToManyField(Branch, blank=True)
-
-    def __str__(self) -> str:
-        return f"{self.user.username} ({self.role})"

@@ -1,0 +1,188 @@
+// Адаптер ответов Django REST -> локальный тип Deal (camelCase, string id).
+import type { ActivityLog, Deal, PaymentScheduleEntry, PipelineId, Task } from '../types'
+
+export interface ApiDeal {
+  id: number | string
+  parent?: { id: number | string; full_name?: string; phone?: string; iin?: string; email?: string } | null
+  child?: { id: number | string; full_name?: string; grade_or_group?: string; grade_band?: string; is_second_child?: boolean } | null
+  /** Может быть как объектом {id,name}, так и просто id (числом) */
+  branch?: { id: number | string; name?: string; code?: string } | number | null
+  branch_id?: number | string | null
+  branch_code?: string | null
+  tariff?: { id: number | string; name?: string } | null
+  payment_schedules?: Array<{ id: number | string; title: string; due_date: string; amount: string; status: 'PENDING' | 'PAID' | 'OVERDUE' }>
+  tasks?: Array<{ id: number | string; title: string; is_done?: boolean; is_completed?: boolean; due_date?: string; priority?: string; auto_generated?: boolean }>
+  activity?: Array<{ id: number | string; type: string; content?: string; description?: string; timestamp?: string; created_at?: string }>
+  status: 'ACTIVE' | 'WON' | 'LOST' | 'WAITLIST'
+  stage_name?: string
+  stage?: { id: number | string; name: string } | null
+  funnel_slug?: string
+  funnel?: { slug: string; name: string } | null
+  pipeline?: string
+  has_food?: boolean
+  has_transport?: boolean
+  total_amount?: string | number
+  contract_value?: string | number | null
+  is_cross_branch?: boolean
+  source_city?: string | null
+  source_branch_requested?: string | null
+  is_duplicate_of?: number | string | null
+  // B2B-поля (Partner, тип партнёрства, сумма договора)
+  partner?: {
+    id: number | string
+    company_name?: string
+    partner_type?: string
+    contact_person?: string
+    contact_phone?: string
+    contact_email?: string
+    bin_number?: string
+  } | null
+  partner_type?: string | null
+}
+
+// Маппинг бэкендовских slug/имён стадий → СИСТЕМНЫЕ slug-ключи канбана.
+// Системные ключи совпадают с pipelineManager.ts и с Django STAGE_SLUG_TO_NAME.
+const STAGE_MAP: Record<string, string> = {
+  // Системные slug (уже совпадают 1:1)
+  new: 'new', qualification: 'qualification',
+  tour_scheduled: 'tour_scheduled', tour: 'tour_scheduled', tour_scheduling: 'tour_scheduled',
+  testing: 'testing', 'tour/test passed': 'testing',
+  contract_signing: 'contract_signing', contract: 'contract_signing',
+  entrance_fee: 'entrance_fee', entrance_fee_paid: 'entrance_fee', 'entrance fee paid': 'entrance_fee',
+  enrolled: 'enrolled', 'contract signed': 'enrolled', won: 'enrolled',
+  lost: 'lost',
+  // Human-readable имена бэкенда (B2C Schools)
+  unsorted: 'new', 'new lead': 'new', 'primary contact': 'new',
+  'qualification/meeting': 'qualification',
+  'tour/test scheduled': 'tour_scheduled', 'tour scheduled': 'tour_scheduled',
+  'tariff & addons selection': 'contract_signing', 'tariff selection': 'contract_signing',
+  'entrance fee': 'entrance_fee',
+  // Бэкендские имена Kindergarten
+  'free trial day set': 'trial_scheduled', 'trial day': 'trial_scheduled',
+  'adaptation period': 'adaptation', adaptation: 'adaptation',
+  'monthly payment': 'first_month_paid', 'first month paid': 'first_month_paid',
+  // Бэкендские имена B2B
+  meeting: 'meeting', 'commercial proposal': 'commercial_offer', 'commercial offer': 'commercial_offer',
+  'contract/tender negotiation': 'contract_negotiation', negotiation: 'contract_negotiation',
+  invoicing: 'invoice_sent', 'invoice sent': 'invoice_sent', 'deal closed': 'won',
+}
+
+const PIPELINE_MAP: Record<string, PipelineId> = {
+  b2c_schools: 'school', b2c_school: 'school', b2c_kindergarten: 'kindergarten', b2b_partnership: 'b2b', b2b: 'b2b',
+}
+
+const toStr = (v: unknown): string => (v === null || v === undefined ? '' : String(v))
+const toNum = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+
+export function normalizePipeline(value: unknown): PipelineId {
+  const raw = String(value ?? '').toLowerCase().trim()
+  if (PIPELINE_MAP[raw]) return PIPELINE_MAP[raw]
+  if (raw.includes('kindergarten')) return 'kindergarten'
+  if (raw.includes('b2b')) return 'b2b'
+  return 'school'
+}
+
+export function normalizeStage(stageName: unknown): string {
+  const key = String(stageName ?? '').toLowerCase().trim()
+  if (STAGE_MAP[key]) return STAGE_MAP[key]
+  // Если стадия не распознана — приводим к системному slug (например "Entrance Fee" -> "entrance_fee").
+  const slug = key.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  if (STAGE_MAP[slug]) return STAGE_MAP[slug]
+  return slug || 'new'
+}
+
+function normTasks(tasks?: ApiDeal['tasks']): Task[] {
+  return (tasks ?? []).map((t) => ({
+    id: toStr(t.id),
+    title: t.title,
+    isDone: Boolean(t.is_done ?? t.is_completed ?? false),
+    isCompleted: Boolean(t.is_completed ?? t.is_done ?? false),
+    dueDate: t.due_date ?? '',
+    priority: (t.priority ?? 'MEDIUM') as Task['priority'],
+    autoGenerated: Boolean(t.auto_generated),
+  }))
+}
+
+function normActivity(activity?: ApiDeal['activity']): ActivityLog[] {
+  return (activity ?? []).map((a) => ({
+    id: toStr(a.id),
+    type: a.type,
+    description: a.content ?? a.description ?? '',
+    timestamp: a.timestamp ?? a.created_at ?? '',
+  }))
+}
+
+function normSchedules(schedules?: ApiDeal['payment_schedules']): PaymentScheduleEntry[] {
+  return (schedules ?? []).map((s) => ({
+    id: toStr(s.id),
+    title: s.title,
+    due_date: s.due_date,
+    amount: toStr(s.amount),
+    status: s.status,
+  }))
+}
+
+export function normalizeDeal(raw: ApiDeal): Deal {
+  // raw.branch может быть объектом {id,name} ИЛИ просто id (числом).
+  let branchId: string
+  if (typeof raw.branch === 'object' && raw.branch !== null && raw.branch.id !== undefined && raw.branch.id !== null) {
+    branchId = toStr(raw.branch.id)
+  } else if (typeof raw.branch === 'number' || typeof raw.branch === 'string') {
+    branchId = toStr(raw.branch)
+  } else {
+    branchId = toStr(raw.branch_id)
+  }
+  return {
+    id: toStr(raw.id),
+    parent: {
+      id: toStr(raw.parent?.id ?? ''),
+      name: raw.parent?.full_name ?? 'Без имени',
+      phone: raw.parent?.phone ?? '',
+      iin: raw.parent?.iin ?? '',
+      email: raw.parent?.email ?? '',
+    },
+    child: {
+      id: toStr(raw.child?.id ?? ''),
+      parentId: toStr(raw.parent?.id ?? ''),
+      name: raw.child?.full_name ?? 'Без имени',
+      birthDate: '',
+      gradeOrGroup: raw.child?.grade_or_group ?? '',
+      gradeBand: (raw.child?.grade_band as Deal['child']['gradeBand']) ?? undefined,
+      isSecondChild: Boolean(raw.child?.is_second_child),
+    },
+    branchId,
+    branchName: typeof raw.branch === 'object' && raw.branch ? raw.branch.name : undefined,
+    pipelineId: normalizePipeline(raw.funnel?.slug ?? raw.funnel_slug ?? raw.pipeline ?? 'b2c_schools'),
+    stageId: normalizeStage(raw.stage_name ?? raw.stage?.name),
+    status: raw.status,
+    tariffId: raw.tariff ? toStr(raw.tariff.id) : '',
+    tariffName: raw.tariff?.name,
+    hasFood: Boolean(raw.has_food),
+    hasTransport: Boolean(raw.has_transport),
+    totalAmount: toNum(raw.total_amount),
+    expectedRevenue: toNum(raw.total_amount ?? raw.contract_value),
+    tasks: normTasks(raw.tasks),
+    history: normActivity(raw.activity),
+    addons: { food: Boolean(raw.has_food), transport: Boolean(raw.has_transport) },
+    isWaitlisted: raw.status === 'WAITLIST',
+    paymentSchedule: normSchedules(raw.payment_schedules),
+    sourceCity: raw.source_city ?? undefined,
+    sourceBranchRequested: raw.source_branch_requested ?? undefined,
+    isCrossBranch: Boolean(raw.is_cross_branch),
+    isDuplicateOf: raw.is_duplicate_of === null || raw.is_duplicate_of === undefined ? null : toStr(raw.is_duplicate_of),
+    // B2B-маппинг (Partner -> b2b-инфо)
+    contractValue: raw.contract_value === null || raw.contract_value === undefined ? undefined : toNum(raw.contract_value),
+    partnerType: raw.partner?.partner_type ?? raw.partner_type ?? undefined,
+    b2b: raw.partner
+      ? {
+          companyName: raw.partner.company_name,
+          bin: raw.partner.bin_number,
+          contactPerson: raw.partner.contact_person,
+          phone: raw.partner.contact_phone,
+          email: raw.partner.contact_email,
+          serviceType: raw.partner.partner_type,
+          budget: raw.contract_value === null || raw.contract_value === undefined ? undefined : toNum(raw.contract_value),
+        }
+      : undefined,
+  }
+}

@@ -12,7 +12,7 @@ interface CheckoutModalProps {
 export function CheckoutModal({ deal, parent, child, tariff, onCancel, onConfirm }: CheckoutModalProps) {
   if (!deal || !parent || !child || !tariff) return null
 
-  const finalTotal = deal.expectedRevenue + (deal.addons.food ? 25000 : 0) + (deal.addons.transport ? 15000 : 0) + tariff.entranceFee
+  const finalTotal = deal.expectedRevenue + (deal.addons.food ? 25000 : 0) + (deal.addons.transport ? 15000 : 0) + tariff.entrance_fee
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4">
@@ -46,7 +46,7 @@ export function CheckoutModal({ deal, parent, child, tariff, onCancel, onConfirm
           </div>
           <div className="flex items-center justify-between">
             <span>Entrance fee</span>
-            <span className="font-semibold text-slate-900">{tariff.entranceFee.toLocaleString('ru-RU')} ₸</span>
+            <span className="font-semibold text-slate-900">{tariff.entrance_fee.toLocaleString('ru-RU')} ₸</span>
           </div>
           <div className="flex items-center justify-between">
             <span>Addons</span>

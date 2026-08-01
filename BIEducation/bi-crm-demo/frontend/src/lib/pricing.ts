@@ -1,6 +1,50 @@
+import type { Deal } from '../types'
+
 export interface PricingPreview {
   total_amount: number;
   schedules: Array<{ title: string; amount: number; due_date: string; status: string }>;
+}
+
+/**
+ * Расчёт потенциальной суммы сделки для отображения на карточке.
+ *
+ * Исправление бага «0 ₸»: если сделка в Waitlist или тариф ещё не финализирован —
+ * НЕ показываем 0. Вместо этого возвращаем базовую стоимость группы/класса
+ * или ориентировочный бюджет (B2B — сумма контракта).
+ */
+export function calculateDealTotal(deal: Deal): number {
+  if (deal.b2b || deal.partnerType) {
+    return deal.contractValue ?? deal.b2b?.budget ?? deal.totalAmount ?? 0
+  }
+
+  // Тариф финализирован — используем реальную сумму.
+  if (deal.totalAmount && deal.totalAmount > 0) {
+    return deal.totalAmount
+  }
+  if (deal.expectedRevenue && deal.expectedRevenue > 0) {
+    return deal.expectedRevenue
+  }
+
+  // Waitlist / тариф не выбран: возвращаем базовую стоимость группы/класса
+  // (ориентировочный бюджет), чтобы не показывать «0 ₸».
+  if (deal.isWaitlisted || deal.status === 'WAITLIST' || !deal.tariffId) {
+    return estimateWaitlistBudget(deal)
+  }
+
+  return deal.totalAmount ?? 0
+}
+
+/** Ориентировочный бюджет по группе/классу, если тариф ещё не финализирован. */
+export function estimateWaitlistBudget(deal: Deal): number {
+  const grade = deal.child?.gradeBand
+  if (grade === 'PRESCHOOL') return 200_000 + 250_000 * 10 // взнос + 10 месяцев сада
+  if (grade === 'SENIOR') return 5_500_000
+  return 4_900_000 // PRIMARY_SECONDARY (Riviera «Стандарт»)
+}
+
+/** Является ли сделка B2B (категория или вкладка). */
+export function isB2BDeal(deal: Deal): boolean {
+  return deal.pipelineId === 'b2b' || Boolean(deal.b2b) || Boolean(deal.partnerType)
 }
 
 export function buildPricingPreview(

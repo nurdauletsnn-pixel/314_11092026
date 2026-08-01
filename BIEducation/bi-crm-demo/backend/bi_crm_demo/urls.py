@@ -19,6 +19,8 @@ from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
 
+from crm.views import ObtainAuthTokenWithRole
+
 
 def healthcheck(request):
     return JsonResponse({"status": "ok", "service": "bi-crm-demo"})
@@ -27,5 +29,6 @@ def healthcheck(request):
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/health/", healthcheck, name="healthcheck"),
+    path("api/auth/token/", ObtainAuthTokenWithRole.as_view(), name="api_token_auth"),
     path("api/", include("crm.urls")),
 ]

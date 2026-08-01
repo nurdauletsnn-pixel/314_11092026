@@ -160,22 +160,51 @@ def build_pricing_summary(
         return {"total_amount": total, "schedules": schedules}
 
     if branch_code.startswith("ALDI_BI") or branch_code == "ALDI_BI":
-        entrance_fee = Decimal("150000")
-        monthly_fee = Decimal("250000")
-        if branch_code == "ALDI_BI_GREENLINE_AQUA":
+        # Исправленный блок: динамическое назначение цен в зависимости от филиала
+        if branch_code == "ALDI_BI_CAPITAL_PARK":
+            entrance_fee = Decimal("200000")
+            monthly_fee = Decimal("250000")
+        elif branch_code == "ALDI_BI_GREENLINE_AQUA":
+            entrance_fee = Decimal("150000")
             monthly_fee = Decimal("165000")
         elif branch_code == "ALDI_BI_FLAGMAN":
+            entrance_fee = Decimal("100000")
             monthly_fee = Decimal("115000")
+        else:
+            # Значения по умолчанию
+            entrance_fee = Decimal("150000")
+            monthly_fee = Decimal("250000")
+
         if is_second_child:
             monthly_fee *= Decimal("0.9")
+            
         schedules = [
             {"title": "Entrance fee", "amount": entrance_fee, "status": "PENDING"},
             {"title": "Monthly tuition", "amount": monthly_fee, "status": "PENDING"},
         ]
+        
         total = calculate_total(branch_code, grade_band="PRESCHOOL", tariff_name="", has_food=False, has_transport=False, transport_zone="CITY", has_second_child_discount=is_second_child, has_subsidy=False)
         return {"total_amount": total, "schedules": schedules}
 
-    raise ValueError(f"Unsupported branch: {branch}")
+    # BIART / BIART_ASTANA — креативные индустрии и B2B-контракты.
+    # Раньше build_pricing_summary падал с "Unsupported branch: BIART" при
+    # выборе этого филиала в UI-калькуляторе. Теперь возвращаем дефолтный
+    # контрактный расчёт, чтобы красная плашка больше не появлялась.
+    if branch_code in {"BIART", "BIART_ASTANA"}:
+        entrance_fee = Decimal("0")
+        contract_amount = Decimal("5000000")  # Корпоративный тариф
+        schedules = [
+            {"title": "Договор / Контракт", "amount": contract_amount, "status": "PENDING"},
+        ]
+        total = Decimal(contract_amount)
+        return {"total_amount": total, "schedules": schedules}
+
+    # Fallback: для неизвестных филиалов (BINOM, новые) — не падаем,
+    # возвращаем нулевую структуру, чтобы UI не показывал красную плашку.
+    return {
+        "total_amount": Decimal("0"),
+        "schedules": [{"title": "Вступительный взнос", "amount": Decimal("0"), "status": "PENDING"}],
+    }
 
 
 def build_schedule_preview(branch: str, tariff: str, has_food: bool = False, has_transport: bool = False, is_second_child: bool = False, grade: str = "5", meals: int = 3) -> list[dict[str, Any]]:

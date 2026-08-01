@@ -1,12 +1,36 @@
 from io import StringIO
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.test import TestCase
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
 
 from .business_logic import calculate_total
-from .models import ActivityLog, Branch, Child, ClassQuota, Contact, Deal, Funnel, Partner, Stage, Task
+from .models import (
+    ActivityLog,
+    Branch,
+    Child,
+    ClassQuota,
+    Contact,
+    Deal,
+    Funnel,
+    Partner,
+    PaymentSchedule,
+    Stage,
+    Task,
+    User,
+)
+
+User = get_user_model()
+
+
+def _unique_phone():
+    import random
+
+    return f"+7701{random.randint(1_000_000, 9_999_999)}"
 
 
 class PricingCalculationTests(TestCase):
@@ -123,6 +147,147 @@ class QuotaReleaseTests(TestCase):
         self.assertEqual(first.status, "ACTIVE")
         self.assertEqual(ActivityLog.objects.filter(deal=first).count(), 1)
         self.assertEqual(Task.objects.filter(deal=second).count(), 0)
+
+
+class UserModelTests(TestCase):
+    def test_hq_admin_can_have_no_branch(self):
+        user = User(username="hq", role=User.Role.HQ_ADMIN, branch=None)
+        user.clean()
+        user.save()
+        self.assertIsNone(user.branch)
+
+    def test_non_hq_admin_requires_branch(self):
+        user = User(username="manager", role=User.Role.SALES_MANAGER, branch=None)
+        with self.assertRaises(ValidationError):
+            user.clean()
+
+
+class RBACApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+        self.branch_a = Branch.objects.create(name="Riviera", code="RIVIERA", city="Астана", segment="SCHOOL")
+        self.branch_b = Branch.objects.create(name="Quantum", code="QUANTUM_STEM", city="Астана", segment="SCHOOL")
+
+        self.hq = User.objects.create_user(username="hq_admin", password="pass1234", role=User.Role.HQ_ADMIN)
+        self.director = User.objects.create_user(username="director", password="pass1234", role=User.Role.BRANCH_DIRECTOR, branch=self.branch_a)
+        self.manager = User.objects.create_user(username="manager", password="pass1234", role=User.Role.SALES_MANAGER, branch=self.branch_a)
+
+        self.hq_token = Token.objects.create(user=self.hq)
+        self.director_token = Token.objects.create(user=self.director)
+        self.manager_token = Token.objects.create(user=self.manager)
+
+        self.funnel = Funnel.objects.create(slug="b2c_schools", name="B2C Schools")
+        self.stage = Stage.objects.create(funnel=self.funnel, name="Qualification", order=1)
+
+        self.deal_a = self._make_deal(self.branch_a)
+        self.deal_b = self._make_deal(self.branch_b)
+
+    def _make_deal(self, branch):
+        parent = Contact.objects.create(full_name="Parent", phone=_unique_phone(), contact_type="PARENT")
+        child = Child.objects.create(parent=parent, full_name="Child", grade_or_group="1 класс", grade_band="PRIMARY_SECONDARY")
+        return Deal.objects.create(funnel=self.funnel, stage=self.stage, branch=branch, parent=parent, child=child, total_amount=Decimal("1000"))
+
+    def _auth(self, token):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_hq_admin_sees_all_deals(self):
+        self._auth(self.hq_token)
+        response = self.client.get("/api/deals/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 2)
+
+    def test_manager_sees_only_own_branch_deals(self):
+        self._auth(self.manager_token)
+        response = self.client.get("/api/deals/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], self.deal_a.id)
+
+    def test_director_sees_only_own_branch_deals(self):
+        self._auth(self.director_token)
+        response = self.client.get("/api/deals/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], self.deal_a.id)
+
+    def test_manager_cannot_retrieve_other_branch_deal(self):
+        self._auth(self.manager_token)
+        response = self.client.get(f"/api/deals/{self.deal_b.id}/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_hq_admin_can_retrieve_any_deal(self):
+        self._auth(self.hq_token)
+        response = self.client.get(f"/api/deals/{self.deal_b.id}/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_manager_cannot_delete_deal(self):
+        self._auth(self.manager_token)
+        response = self.client.delete(f"/api/deals/{self.deal_a.id}/")
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Deal.objects.filter(pk=self.deal_a.id).exists())
+
+    def test_director_can_delete_own_branch_deal(self):
+        self._auth(self.director_token)
+        response = self.client.delete(f"/api/deals/{self.deal_a.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Deal.objects.filter(pk=self.deal_a.id).exists())
+
+    def test_director_cannot_delete_other_branch_deal(self):
+        self._auth(self.director_token)
+        response = self.client.delete(f"/api/deals/{self.deal_b.id}/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_hq_admin_can_delete_any_deal(self):
+        self._auth(self.hq_token)
+        response = self.client.delete(f"/api/deals/{self.deal_b.id}/")
+        self.assertEqual(response.status_code, 204)
+
+    def test_manager_cannot_mark_paid(self):
+        self._auth(self.manager_token)
+        schedule = PaymentSchedule.objects.create(deal=self.deal_a, title="Entrance", due_date="2026-08-01", amount=Decimal("100"), status="PENDING")
+        response = self.client.post(f"/api/payment-schedules/{schedule.id}/mark-paid/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_director_can_mark_paid(self):
+        self._auth(self.director_token)
+        schedule = PaymentSchedule.objects.create(deal=self.deal_a, title="Entrance", due_date="2026-08-01", amount=Decimal("100"), status="PENDING")
+        response = self.client.post(f"/api/payment-schedules/{schedule.id}/mark-paid/")
+        self.assertEqual(response.status_code, 200)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, "PAID")
+
+    def test_manager_cannot_update_payment_status_via_put(self):
+        self._auth(self.manager_token)
+        schedule = PaymentSchedule.objects.create(deal=self.deal_a, title="Entrance", due_date="2026-08-01", amount=Decimal("100"), status="PENDING")
+        response = self.client.patch(f"/api/payment-schedules/{schedule.id}/", {"status": "PAID"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.status, "PENDING")
+
+    def test_me_returns_role_and_branch(self):
+        self._auth(self.manager_token)
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["role"], "SALES_MANAGER")
+        self.assertEqual(response.data["branch"]["id"], self.branch_a.id)
+
+    def test_auth_token_returns_role_and_branch(self):
+        response = self.client.post(
+            "/api/auth/token/",
+            {"username": "manager", "password": "pass1234"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["user"]["role"], "SALES_MANAGER")
+        self.assertEqual(response.data["user"]["branch"]["id"], self.branch_a.id)
+
+    def test_manager_metadata_only_own_branch(self):
+        self._auth(self.manager_token)
+        response = self.client.get("/api/deals/metadata/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["branches"]), 1)
+        self.assertEqual(response.data["branches"][0]["id"], self.branch_a.id)
 
 
 class MockDataGenerationTests(TestCase):

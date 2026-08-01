@@ -1,0 +1,11 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/opt/homebrew/bin/python3.12": true,
+        "pip": true,
+        "django-admin": true,
+        "/^cd /Users/nurdaulet/Documents/NYPDAYLET/BIEducation/bi-crm-demo/backend && \\. \\.venv/bin/activate && python manage\\.py test crm$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
